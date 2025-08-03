@@ -53,42 +53,60 @@ app = FastAPI(
 )
 
 
+# --- MODIFIED: process_request_queue is now more robust ---
 async def process_request_queue():
     """The main worker loop that processes jobs from the priority queue."""
     log.info("Request queue worker started.")
     while True:
         try:
-            # Get the highest priority job. Tuple is (priority, count, job)
+            # This outer try block handles getting a job from the queue.
+            # If this `await` is cancelled, the `CancelledError` is caught below and the loop breaks.
             priority, _, job = await request_queue.get()
-            log.info(f"Dequeued job (priority: {priority}, model: '{job.model_name}')")
 
-            # 1. Load the model if it's not the correct one.
-            if (manager._current_model_name != job.model_name or
-                    manager._current_device != job.device):
-                await manager.load_model(
-                    job.model_name,
-                    device=job.device,
-                    keep_alive_override=job.keep_alive_override
-                )
+            # This inner try/except/finally block handles processing the job.
+            # It ensures that task_done() is called for every job that is successfully dequeued.
+            try:
+                log.info(f"Dequeued job (priority: {priority}, model: '{job.model_name}')")
 
-            model = manager.get_model()
-            if model is None:
-                raise RuntimeError(f"Model '{job.model_name}' failed to load after queueing.")
+                # 1. Load the model if it's not the correct one.
+                if (manager._current_model_name != job.model_name or
+                        manager._current_device != job.device):
+                    await manager.load_model(
+                        job.model_name,
+                        device=job.device,
+                        keep_alive_override=job.keep_alive_override
+                    )
 
-            # 2. Execute the work in a thread to avoid blocking the event loop.
-            job.kwargs['model'] = model
-            work_to_run = partial(job.work_function, *job.args, **job.kwargs)
-            result = await asyncio.to_thread(work_to_run)
+                model = manager.get_model()
+                if model is None:
+                    raise RuntimeError(f"Model '{job.model_name}' failed to load after queueing.")
 
-            # 3. Set the result on the future to unblock the waiting endpoint.
-            job.future.set_result(result)
+                # 2. Execute the work in a thread to avoid blocking the event loop.
+                job.kwargs['model'] = model
+                work_to_run = partial(job.work_function, *job.args, **job.kwargs)
+                result = await asyncio.to_thread(work_to_run)
+
+                # 3. Set the result on the future to unblock the waiting endpoint.
+                if not job.future.done():
+                    job.future.set_result(result)
+
+            except Exception as e:
+                log.error(f"Error processing queued job for model '{job.model_name}': {e}", exc_info=True)
+                if not job.future.done():
+                    job.future.set_exception(e)
+            finally:
+                # This is only reached if get() was successful, and it guarantees
+                # that we mark the task as done for the queue.
+                request_queue.task_done()
+
+        except asyncio.CancelledError:
+            log.info("Request queue worker is shutting down.")
+            break  # Exit the loop gracefully.
 
         except Exception as e:
-            log.error(f"Error processing queued job for model '{job.model_name}': {e}", exc_info=True)
-            if 'job' in locals() and not job.future.done():
-                job.future.set_exception(e)
-        finally:
-            request_queue.task_done()
+            # This would catch a non-cancellation error from get() itself.
+            log.error(f"FATAL: Unhandled error in request queue worker loop: {e}", exc_info=True)
+            await asyncio.sleep(1) # Prevent a tight loop of failures.
 
 
 @app.on_event("startup")
