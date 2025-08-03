@@ -1,0 +1,26 @@
+[project]
+name = "embedserv"
+version = "0.1.0"
+description = "A local sentence-transformer server similar to Ollama."
+requires-python = ">=3.10"
+# List all core dependencies here. This is what `pip install` uses.
+dependencies = [
+    "click",
+    "fastapi",
+    "pydantic",
+    "requests",
+    "sentence-transformers",
+    "torch",
+    "uvicorn",
+    "rich",
+    "chromadb"
+]
+
+[project.scripts]
+embedserv = "embedserv.cli:main"
+
+# Optional: You can define optional dependencies for testing
+[project.optional-dependencies]
+test = [
+    "pytest"
+]
