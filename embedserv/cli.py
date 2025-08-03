@@ -45,31 +45,36 @@ def main(ctx: AppContext, server_url: str):
 @click.option(
     '--port',
     type=int,
-    default=None,  # Default is now None, so we can detect if it was passed
+    default=None,
     help='Port to bind to. Overrides the configured port.'
 )
 @click.option(
     '--keep-alive',
-    default=DEFAULT_KEEP_ALIVE_SECONDS,
-    type=int,
-    help=f'Default time (in seconds) to keep models loaded in memory. Default: {DEFAULT_KEEP_ALIVE_SECONDS}s.'
+    default=None,
+    type=click.IntRange(min=0),  # Use Click's built-in validation
+    help='Default time (in seconds) to keep models loaded. Overrides configured value.'
 )
 def serve(host: str, port: int, keep_alive: int):
     """
     Starts the EmbedServ server.
-    Reads the port from config unless overridden by the --port flag.
+    Reads config unless overridden by flags.
     """
     config = load_config()
 
-    # Order of precedence: --port flag > config file > hardcoded default
+    # Order of precedence: --flag > config file > hardcoded default
     port_to_use = port or config.get('port', 11536)
 
+    # Check keep_alive flag; if not provided (is None), check config, then use default
+    keep_alive_to_use = keep_alive
+    if keep_alive_to_use is None:
+        keep_alive_to_use = config.get('keep_alive', DEFAULT_KEEP_ALIVE_SECONDS)
+
     click.echo(f"🚀 Starting EmbedServ server on http://{host}:{port_to_use}")
-    click.echo(f"   Default model keep-alive duration: {keep_alive} seconds")
+    click.echo(f"   Default model keep-alive duration: {keep_alive_to_use} seconds")
     click.echo(f"   API documentation available at http://{host}:{port_to_use}/docs")
 
     from .server import app as fastapi_app
-    fastapi_app.state.keep_alive_seconds = keep_alive
+    fastapi_app.state.keep_alive_seconds = keep_alive_to_use
     uvicorn.run(fastapi_app, host=host, port=port_to_use, log_level="info")
 
 
@@ -84,30 +89,47 @@ def config():
 @click.argument("value")
 def set_config(key: str, value: str):
     """
-    Set a configuration value.
+    Set a configuration value. Supported keys: port, keep_alive.
 
     Example: embedserv config set port 1876
+    Example: embedserv config set keep_alive 600
     """
     console = Console()
-    if key.lower() != 'port':
-        console.print(f"❌ [bold red]Error:[/bold red] Only 'port' is a supported configuration key right now.")
-        return
+    key = key.lower()
+    current_config = load_config()
 
-    try:
-        port_val = int(value)
-        if not (1024 <= port_val <= 65535):
-            raise ValueError("Port must be between 1024 and 65535.")
-    except ValueError as e:
-        console.print(f"❌ [bold red]Invalid value for port:[/bold red] {e}")
+    if key == 'port':
+        try:
+            port_val = int(value)
+            if not (1024 <= port_val <= 65535):
+                raise ValueError("Port must be between 1024 and 65535.")
+            current_config[key] = port_val
+        except ValueError as e:
+            console.print(f"❌ [bold red]Invalid value for port:[/bold red] {e}")
+            return
+    elif key == 'keep_alive':
+        try:
+            keep_alive_val = int(value)
+            if keep_alive_val < 0:
+                raise ValueError("Keep-alive must be a non-negative integer.")
+            current_config[key] = keep_alive_val
+        except ValueError as e:
+            console.print(f"❌ [bold red]Invalid value for keep_alive:[/bold red] {e}")
+            return
+    else:
+        console.print(f"❌ [bold red]Error:[/bold red] '{key}' is not a supported configuration key.")
+        console.print("   Supported keys are: [cyan]port[/cyan], [cyan]keep_alive[/cyan]")
         return
 
     console.print(f"Setting {key} to {value}...")
-    current_config = load_config()
-    current_config[key] = port_val
     save_config(current_config)
     console.print(f"✅ Configuration saved to ~/.embedserv/config.json")
-    console.print(
-        f"[yellow]Restart the service for the new port to take effect:[/yellow] sudo systemctl restart embedserv")
+    if key == 'port':
+        console.print(
+            f"[yellow]Restart the service for the new port to take effect.[/yellow]")
+    else:
+        console.print(
+            f"[yellow]Restart the service for the new keep-alive default to take effect.[/yellow]")
 
 
 @config.command("view")
