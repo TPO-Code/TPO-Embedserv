@@ -271,14 +271,18 @@ def db_list(ctx: AppContext):
 
         table = Table(title="Server Collections", show_header=True, header_style="bold green")
         table.add_column("Collection Name", style="yellow")
+        # Add a new column for the model
+        table.add_column("Embedding Model", style="cyan")
 
-        collections = data.get('collections', [])
-        if not collections:
+        collections_info = data.get('collections', [])
+        if not collections_info:
             console.print("No collections found on the server.")
             return
 
-        for name in collections:
-            table.add_row(name)
+        # Loop through the list of objects and extract the data
+        for info in collections_info:
+            model_name = info.get('metadata', {}).get('embedding_model', "[N/A]")
+            table.add_row(info['name'], model_name)
         console.print(table)
 
     except requests.exceptions.RequestException as e:
@@ -287,14 +291,15 @@ def db_list(ctx: AppContext):
 
 @db_group.command("create")
 @click.argument("name")
+@click.option("--model", required=True, help="The embedding model to use for this collection (e.g., 'all-MiniLM-L6-v2').")
 @pass_ctx
-def db_create(ctx: AppContext, name: str):
+def db_create(ctx: AppContext, name: str, model: str):
     """Creates a new, empty collection on the server."""
     console = Console()
     try:
         response = requests.post(
             f"{ctx.server_url}/api/v1/db",
-            json={"name": name}
+            json={"name": name, "model": model} # Pass model in the JSON payload
         )
         response.raise_for_status()
         data = response.json()
@@ -372,29 +377,56 @@ def db_export(name: str, output_file: str):
 @click.argument("name")
 @click.argument("input_file", type=click.Path(dir_okay=False, readable=True, exists=True))
 @click.option('--batch-size', default=100, help="Number of documents to send in each batch.")
+# Add a new, required option for the model name.
+@click.option(
+    '--model',
+    required=True,
+    help="The name of the model that generated the embeddings in the import file. This will be associated with the collection."
+)
 @pass_ctx
-def db_import(ctx: AppContext, name: str, input_file: str, batch_size: int):
+def db_import(ctx: AppContext, name: str, input_file: str, batch_size: int, model: str):
     """Imports documents from a .jsonl file into a new or existing collection."""
     console = Console()
 
-    # Step 1: Ensure collection exists.
+    # Step 1: Check if collection exists.
     try:
         console.print(f"Checking for collection '{name}' on the server...")
         response = requests.get(f"{ctx.server_url}/api/v1/db")
         response.raise_for_status()
-        if name not in response.json().get('collections', []):
-            if click.confirm(f"Collection '{name}' does not exist. Do you want to create it?"):
-                create_resp = requests.post(f"{ctx.server_url}/api/v1/db", json={"name": name})
+
+        server_collections_info = response.json().get('collections', [])
+        collections_on_server = [c['name'] for c in server_collections_info]
+
+        if name not in collections_on_server:
+            # If it doesn't exist, prompt to create it WITH THE MODEL.
+            if click.confirm(f"Collection '{name}' does not exist. Do you want to create it with model '{model}'?"):
+                console.print(f"Creating collection '{name}' with model '{model}'...")
+                # The corrected API call, now including the model.
+                create_payload = {"name": name, "model": model}
+                create_resp = requests.post(f"{ctx.server_url}/api/v1/db", json=create_payload)
                 create_resp.raise_for_status()
                 console.print(f"✅ Collection '{name}' created.")
             else:
-                console.print("Import cancelled.")
+                console.print("Import aborted by user.")
                 return
+        else:
+            # If it exists, we should still verify the model matches.
+            console.print("Collection exists. Verifying model consistency...")
+            # This is a good defensive check, though the server would catch it anyway.
+            # We need to find the collection's data from the list.
+            existing_collection_data = next((c for c in response.json().get('collections', []) if c['name'] == name), None)
+            if existing_collection_data:
+                stored_model = existing_collection_data.get('metadata', {}).get('embedding_model')
+                if stored_model and stored_model != model:
+                    console.print(f"❌ [bold red]Error:[/bold red] Model mismatch. The import file is for model '{model}', but the existing collection '{name}' was created with '{stored_model}'.")
+                    console.print("   Aborting import to prevent data corruption.")
+                    return
+
     except requests.RequestException as e:
         console.print(f"❌ [bold red]Could not connect to server to check collection:[/bold red] {e}")
         return
 
-    # Step 2: Read file and send in batches.
+    # Step 2: Read file and send in batches (this part of the logic was already correct).
     console.print(f"Importing from '{input_file}' into '{name}' with batch size {batch_size}...")
     batch = []
     total_imported = 0
@@ -411,13 +443,13 @@ def db_import(ctx: AppContext, name: str, input_file: str, batch_size: int):
                     continue
 
                 if len(batch) >= batch_size:
-                    _send_batch(ctx, name, batch)
+                    _send_batch(ctx, name, batch, model)
                     total_imported += len(batch)
                     batch = []
                     console.print(f"  ...imported {total_imported} documents...")
 
             if batch: # Send the final batch
-                _send_batch(ctx, name, batch)
+                _send_batch(ctx, name, batch, model)
                 total_imported += len(batch)
 
         duration = time.time() - start_time
@@ -427,9 +459,10 @@ def db_import(ctx: AppContext, name: str, input_file: str, batch_size: int):
         console.print(f"❌ [bold red]A fatal error occurred during import:[/bold red] {e}")
 
 
-def _send_batch(ctx: AppContext, collection_name: str, batch: list):
+def _send_batch(ctx: AppContext, collection_name: str, batch: list, model_name: str):
     """Helper function to format and send a batch to the server."""
     payload = {
+        "model": model_name,
         "ids": [item['id'] for item in batch],
         "documents": [item['document'] for item in batch],
         "metadatas": [item['metadata'] for item in batch],
