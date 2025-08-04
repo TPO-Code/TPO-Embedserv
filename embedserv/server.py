@@ -17,7 +17,7 @@ from .schemas import (
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
     QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
     GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse,
-    ServerStatusResponse
+    ServerStatusResponse, BatchAddRequest
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -344,6 +344,44 @@ async def delete_from_db_collection(collection_name: str, request: DeleteByIdReq
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/db/{collection_name}/clear", response_model=StatusResponse)
+async def db_clear_collection(collection_name: str):
+    """Clears all documents from a collection, but keeps the collection itself."""
+    try:
+        # Run blocking I/O in a thread to not block the event loop
+        await asyncio.to_thread(db_manager.clear_collection, collection_name)
+        return StatusResponse(status="success", message=f"Collection '{collection_name}' cleared successfully.")
+    except ValueError as e:
+        # This is raised by the db_manager if the collection doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/db/{collection_name}/batch-add", response_model=StatusResponse)
+async def batch_add_to_db_collection(collection_name: str, request: BatchAddRequest):
+    """
+    Adds a batch of documents with pre-computed embeddings to a collection.
+    Used by the 'db import' CLI command.
+    """
+    try:
+        # Run blocking I/O in a thread
+        await asyncio.to_thread(
+            db_manager.batch_add_to_collection,
+            collection_name=collection_name,
+            ids=request.ids,
+            documents=request.documents,
+            metadatas=request.metadatas,
+            embeddings=request.embeddings
+        )
+        return StatusResponse(status="success",
+                              message=f"Successfully added batch of {len(request.documents)} documents to '{collection_name}'.")
+    except ValueError as e:
+        # This is raised if the collection doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # Catches other potential errors during the add operation.
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/unload", response_model=StatusResponse)
 async def unload_current_model():
