@@ -4,9 +4,10 @@ import itertools
 from functools import partial
 from dataclasses import dataclass, field
 from typing import List, Callable, Any, Dict
+from datetime import timezone
 
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
@@ -15,7 +16,8 @@ from .schemas import (
     EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
     QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
-    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse
+    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse,
+    ServerStatusResponse
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -194,7 +196,28 @@ def _work_calculate_similarity(embeddings_a: List[List[float]], embeddings_b: Li
 async def read_root(): # Changed to async for consistency
     return {"message": "EmbedServ is running. See /docs for API details."}
 
+@app.get("/health", status_code=200)
+async def health_check():
+    """A simple health check endpoint for automated systems."""
+    return Response(status_code=200)
 
+
+@app.get("/api/v1/status", response_model=ServerStatusResponse)
+async def get_server_status():
+    """Provides a detailed status of the server's state."""
+    # Ensure last_used is timezone-aware if it exists
+    last_used = manager._last_used
+    if last_used and last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=timezone.utc)
+
+    return ServerStatusResponse(
+        status="running",
+        current_model=manager._current_model_name,
+        current_device=manager._current_device,
+        last_used_at=last_used,
+        keep_alive_seconds=manager._current_keep_alive_duration.total_seconds(),
+        pending_queue_jobs=request_queue.qsize()
+    )
 # --- Model-Dependent Endpoints ---
 
 @app.post("/api/v1/embeddings", response_model=EmbeddingResponse)

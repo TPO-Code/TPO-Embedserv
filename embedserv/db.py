@@ -1,7 +1,7 @@
 # In embedserv/db.py
 
 import logging
-from typing import Optional
+from typing import Optional, List, Iterator, Dict, Any
 
 import chromadb
 from chromadb.types import Collection
@@ -157,3 +157,59 @@ class VectorDBManager:
         collection = self.get_collection(collection_name)
         log.info(f"Deleting {len(ids)} documents by ID from '{collection_name}'.")
         return collection.delete(ids=ids)
+
+    def clear_collection(self, name: str):
+        """Deletes all documents from a collection, but keeps the collection."""
+        collection = self.get_collection(name)
+        # Get all IDs in the collection. The `get()` method with no IDs returns everything.
+        existing_ids = collection.get(include=[])['ids']
+        if not existing_ids:
+            log.info(f"Collection '{name}' is already empty. Nothing to clear.")
+            return
+
+        log.info(f"Clearing all {len(existing_ids)} documents from collection '{name}'...")
+        collection.delete(ids=existing_ids)
+        log.info(f"Successfully cleared collection '{name}'.")
+
+    def export_collection(self, name: str) -> Iterator[Dict[str, Any]]:
+        """
+        Yields all documents from a collection for export.
+
+        This is a generator to handle large collections without consuming too much memory.
+        """
+        collection = self.get_collection(name)
+        log.info(f"Beginning export of collection '{name}'...")
+
+        # The `get()` method retrieves all items if no IDs are specified.
+        # We retrieve everything that can be exported.
+        data = collection.get(include=["documents", "metadatas", "embeddings"])
+
+        # The data is returned as a dict of lists, so we need to zip it
+        # back into a list of individual document dicts.
+        count = len(data['ids'])
+        for i in range(count):
+            yield {
+                "id": data["ids"][i],
+                "document": data["documents"][i],
+                "metadata": data["metadatas"][i],
+                "embedding": data["embeddings"][i],
+            }
+        log.info(f"Finished exporting {count} documents from '{name}'.")
+
+    def batch_add_to_collection(
+            self,
+            collection_name: str,
+            ids: List[str],
+            documents: List[str],
+            metadatas: List[Dict],
+            embeddings: List[List[float]]
+    ):
+        """Adds a batch of items with pre-computed embeddings to a collection."""
+        collection = self.get_collection(collection_name)
+        collection.add(
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        log.info(f"Successfully added batch of {len(documents)} documents to '{collection_name}'.")
