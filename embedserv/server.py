@@ -4,9 +4,10 @@ import itertools
 from functools import partial
 from dataclasses import dataclass, field
 from typing import List, Callable, Any, Dict
+from datetime import timezone
 
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
@@ -15,7 +16,8 @@ from .schemas import (
     EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
     QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
-    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse
+    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse,
+    ServerStatusResponse, BatchAddRequest
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -194,7 +196,28 @@ def _work_calculate_similarity(embeddings_a: List[List[float]], embeddings_b: Li
 async def read_root(): # Changed to async for consistency
     return {"message": "EmbedServ is running. See /docs for API details."}
 
+@app.get("/health", status_code=200)
+async def health_check():
+    """A simple health check endpoint for automated systems."""
+    return Response(status_code=200)
 
+
+@app.get("/api/v1/status", response_model=ServerStatusResponse)
+async def get_server_status():
+    """Provides a detailed status of the server's state."""
+    # Ensure last_used is timezone-aware if it exists
+    last_used = manager._last_used
+    if last_used and last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=timezone.utc)
+
+    return ServerStatusResponse(
+        status="running",
+        current_model=manager._current_model_name,
+        current_device=manager._current_device,
+        last_used_at=last_used,
+        keep_alive_seconds=manager._current_keep_alive_duration.total_seconds(),
+        pending_queue_jobs=request_queue.qsize()
+    )
 # --- Model-Dependent Endpoints ---
 
 @app.post("/api/v1/embeddings", response_model=EmbeddingResponse)
@@ -321,6 +344,44 @@ async def delete_from_db_collection(collection_name: str, request: DeleteByIdReq
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/db/{collection_name}/clear", response_model=StatusResponse)
+async def db_clear_collection(collection_name: str):
+    """Clears all documents from a collection, but keeps the collection itself."""
+    try:
+        # Run blocking I/O in a thread to not block the event loop
+        await asyncio.to_thread(db_manager.clear_collection, collection_name)
+        return StatusResponse(status="success", message=f"Collection '{collection_name}' cleared successfully.")
+    except ValueError as e:
+        # This is raised by the db_manager if the collection doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/db/{collection_name}/batch-add", response_model=StatusResponse)
+async def batch_add_to_db_collection(collection_name: str, request: BatchAddRequest):
+    """
+    Adds a batch of documents with pre-computed embeddings to a collection.
+    Used by the 'db import' CLI command.
+    """
+    try:
+        # Run blocking I/O in a thread
+        await asyncio.to_thread(
+            db_manager.batch_add_to_collection,
+            collection_name=collection_name,
+            ids=request.ids,
+            documents=request.documents,
+            metadatas=request.metadatas,
+            embeddings=request.embeddings
+        )
+        return StatusResponse(status="success",
+                              message=f"Successfully added batch of {len(request.documents)} documents to '{collection_name}'.")
+    except ValueError as e:
+        # This is raised if the collection doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # Catches other potential errors during the add operation.
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/unload", response_model=StatusResponse)
 async def unload_current_model():

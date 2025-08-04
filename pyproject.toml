@@ -1,6 +1,6 @@
 [project]
 name = "embedserv"
-version = "0.1.0"
+version = "1.0.1"
 description = "A local sentence-transformer server similar to Ollama."
 requires-python = ">=3.10"
 # List all core dependencies here. This is what `pip install` uses.
