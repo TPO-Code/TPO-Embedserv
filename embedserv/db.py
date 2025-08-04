@@ -5,7 +5,6 @@ from typing import Optional, List, Iterator, Dict, Any
 
 import chromadb
 from chromadb.types import Collection
-#from chromadb.types import Collection
 from sentence_transformers import SentenceTransformer
 
 from .config import DB_DIR, ensure_dirs_exist
@@ -27,6 +26,11 @@ class VectorDBManager:
     def list_collections(self) -> list[str]:
         """Lists all available collection names."""
         return [c.name for c in self.client.list_collections()]
+
+    def list_collections_with_metadata(self) -> List[Dict[str, Any]]:
+        """Returns a list of dictionaries, each containing a collection's name and metadata."""
+        collections = self.client.list_collections()
+        return [{"name": c.name, "metadata": c.metadata} for c in collections]
 
     def create_collection(self, name: str, model_name: str):
         """
@@ -225,12 +229,14 @@ class VectorDBManager:
     def batch_add_to_collection(
             self,
             collection_name: str,
+            model_name: str,
             ids: List[str],
             documents: List[str],
             metadatas: List[Dict],
             embeddings: List[List[float]]
     ):
         """Adds a batch of items with pre-computed embeddings to a collection."""
+        self._verify_model_consistency(collection_name, model_name)
         collection = self.get_collection(collection_name)
         collection.add(
             embeddings=embeddings,

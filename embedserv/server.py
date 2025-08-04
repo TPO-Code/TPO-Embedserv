@@ -15,9 +15,9 @@ from sentence_transformers.util import cos_sim
 from .schemas import (
     EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
-    QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
+    QueryRequest, QueryResponse, UpdateRequest,
     GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse,
-    ServerStatusResponse, BatchAddRequest
+    ServerStatusResponse, BatchAddRequest,CollectionListResponse, CollectionInfo
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -73,8 +73,14 @@ async def process_request_queue():
                 log.info(f"Dequeued job (priority: {priority}, model: '{job.model_name}')")
 
                 # 1. Load the model if it's not the correct one.
-                if (manager._current_model_name != job.model_name or
-                        manager._current_device != job.device):
+                needs_reload = False
+                if manager._current_model_name != job.model_name:
+                    needs_reload = True
+                # Only check for device mismatch if the job specifies a device
+                elif job.device is not None and manager._current_device != job.device:
+                    needs_reload = True
+
+                if needs_reload:
                     await manager.load_model(
                         job.model_name,
                         device=job.device,
@@ -145,7 +151,11 @@ async def _queue_job_and_wait(
         kwargs = {}
 
     # Priority 0 (high) for a match, 1 (low) for a mismatch
-    priority = 0 if (manager._current_model_name == model_name and manager._current_device == device) else 1
+    is_model_match = (manager._current_model_name == model_name)
+    # Give high priority if the device matches OR if the user didn't specify one
+    is_device_ok = (manager._current_device == device or device is None)
+
+    priority = 0 if is_model_match and is_device_ok else 1
 
     future = asyncio.get_running_loop().create_future()
 
@@ -369,6 +379,7 @@ async def batch_add_to_db_collection(collection_name: str, request: BatchAddRequ
         await asyncio.to_thread(
             db_manager.batch_add_to_collection,
             collection_name=collection_name,
+            model_name=request.model,
             ids=request.ids,
             documents=request.documents,
             metadatas=request.metadatas,
@@ -377,8 +388,9 @@ async def batch_add_to_db_collection(collection_name: str, request: BatchAddRequ
         return StatusResponse(status="success",
                               message=f"Successfully added batch of {len(request.documents)} documents to '{collection_name}'.")
     except ValueError as e:
-        # This is raised if the collection doesn't exist.
-        raise HTTPException(status_code=404, detail=str(e))
+        # This is raised if the collection doesn't exist or model mismatches.
+        # It's better to return a 409 (Conflict) or 400 (Bad Request) for model mismatch
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # Catches other potential errors during the add operation.
         raise HTTPException(status_code=500, detail=str(e))
@@ -397,8 +409,8 @@ async def unload_current_model():
 @app.get("/api/v1/db", response_model=CollectionListResponse)
 async def list_db_collections():
     # Run blocking I/O in a thread
-    collections = await asyncio.to_thread(db_manager.list_collections)
-    return CollectionListResponse(collections=collections)
+    collections_info = await asyncio.to_thread(db_manager.list_collections_with_metadata)
+    return CollectionListResponse(collections=collections_info)
 
 
 @app.post("/api/v1/db", response_model=StatusResponse)

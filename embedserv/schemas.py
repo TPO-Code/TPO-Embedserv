@@ -94,8 +94,12 @@ class QueryResult(BaseModel):
 class QueryResponse(BaseModel):
     results: QueryResult
 
+class CollectionInfo(BaseModel):
+    name: str
+    metadata: Optional[Dict[str, Any]] = None
+
 class CollectionListResponse(BaseModel):
-    collections: List[str]
+    collections: List[CollectionInfo]
 
 class GetResponse(BaseModel):
     """Response for getting documents by ID."""
@@ -123,8 +127,11 @@ class ServerStatusResponse(BaseModel):
     keep_alive_seconds: float
     pending_queue_jobs: int
 
+
 class BatchAddRequest(BaseModel):
     """Request for adding a batch of documents with pre-computed embeddings."""
+    model: str = Field(..., description="The name of the model associated with the embeddings.")
+
     ids: List[str] = Field(..., description="A list of unique string IDs for each document.")
     documents: List[str] = Field(..., description="A list of documents to add.")
     metadatas: List[Dict[str, Any]] = Field(...,
