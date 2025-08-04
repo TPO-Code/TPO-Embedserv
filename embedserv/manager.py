@@ -59,11 +59,11 @@ class ModelManager:
                 self._current_model = SentenceTransformer(
                     model_name,
                     cache_folder=str(MODELS_DIR),
-                    device=device  # <-- ADD THIS LINE
+                    device=device
                 )
                 self._current_model_name = model_name
-                self._current_device = device
-                log.info(f"Successfully loaded model '{model_name}' on device '{device}'.")  # Log the actual device
+                self._current_device = str(self._current_model.device)
+                log.info(f"Successfully loaded model '{model_name}' on device '{self._current_device}'.")
 
                 # Update the timestamp
                 self._update_last_used()
