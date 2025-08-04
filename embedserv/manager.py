@@ -37,10 +37,6 @@ class ModelManager:
         async with self._load_lock:
             # If the same model is requested, just update its last used time.
             # If the same model on the same device is requested, do nothing.
-            if self._current_model_name == model_name and self._current_device == device:
-                log.info(f"Model '{model_name}' on device '{device}' is already loaded.")
-                self._update_last_used()
-                return
 
             if self._current_model:
                 self.unload_model()  # This unloads the old model/device
@@ -59,11 +55,11 @@ class ModelManager:
                 self._current_model = SentenceTransformer(
                     model_name,
                     cache_folder=str(MODELS_DIR),
-                    device=device  # <-- ADD THIS LINE
+                    device=device
                 )
                 self._current_model_name = model_name
-                self._current_device = device
-                log.info(f"Successfully loaded model '{model_name}' on device '{device}'.")  # Log the actual device
+                self._current_device = str(self._current_model.device)
+                log.info(f"Successfully loaded model '{model_name}' on device '{self._current_device}'.")
 
                 # Update the timestamp
                 self._update_last_used()
@@ -139,3 +135,4 @@ class ModelManager:
                     f"Model '{self._current_model_name}' has been inactive for {time_since_last_use.total_seconds():.0f}s. Unloading.")
                 self.unload_model()
                 break
+

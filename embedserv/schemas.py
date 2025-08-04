@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Union, Optional, Dict, Any
-
+from datetime import datetime
 # helper class for DRY (Don't Repeat Yourself) principle
 class ModelTaskRequest(BaseModel):
     model: str = Field(..., description="The name of the model to use for this task.")
@@ -53,6 +53,7 @@ class StatusResponse(BaseModel):
 
 class CollectionRequest(BaseModel):
     name: str = Field(..., description="The name for the new collection.")
+    model: str = Field(..., description="The sentence-transformer model to associate with this collection.")
 
 class CollectionCountResponse(BaseModel):
     name: str
@@ -93,8 +94,12 @@ class QueryResult(BaseModel):
 class QueryResponse(BaseModel):
     results: QueryResult
 
+class CollectionInfo(BaseModel):
+    name: str
+    metadata: Optional[Dict[str, Any]] = None
+
 class CollectionListResponse(BaseModel):
-    collections: List[str]
+    collections: List[CollectionInfo]
 
 class GetResponse(BaseModel):
     """Response for getting documents by ID."""
@@ -112,3 +117,23 @@ class SimilarityRequest(BaseModel):
 class SimilarityResponse(BaseModel):
     """Response body for the /similarity endpoint."""
     similarity_scores: List[List[float]]
+
+class ServerStatusResponse(BaseModel):
+    """Response body for the /status endpoint."""
+    status: str
+    current_model: Optional[str] = None
+    current_device: Optional[str] = None
+    last_used_at: Optional[datetime] = None
+    keep_alive_seconds: float
+    pending_queue_jobs: int
+
+
+class BatchAddRequest(BaseModel):
+    """Request for adding a batch of documents with pre-computed embeddings."""
+    model: str = Field(..., description="The name of the model associated with the embeddings.")
+
+    ids: List[str] = Field(..., description="A list of unique string IDs for each document.")
+    documents: List[str] = Field(..., description="A list of documents to add.")
+    metadatas: List[Dict[str, Any]] = Field(...,
+                                            description="A list of metadata dictionaries, one for each document.")
+    embeddings: List[List[float]] = Field(..., description="A list of pre-computed embedding vectors.")

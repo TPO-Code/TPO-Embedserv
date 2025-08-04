@@ -4,9 +4,10 @@ import itertools
 from functools import partial
 from dataclasses import dataclass, field
 from typing import List, Callable, Any, Dict
+from datetime import timezone
 
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
@@ -14,8 +15,9 @@ from sentence_transformers.util import cos_sim
 from .schemas import (
     EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
-    QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
-    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse
+    QueryRequest, QueryResponse, UpdateRequest,
+    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse,
+    ServerStatusResponse, BatchAddRequest,CollectionListResponse, CollectionInfo
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -71,8 +73,14 @@ async def process_request_queue():
                 log.info(f"Dequeued job (priority: {priority}, model: '{job.model_name}')")
 
                 # 1. Load the model if it's not the correct one.
-                if (manager._current_model_name != job.model_name or
-                        manager._current_device != job.device):
+                needs_reload = False
+                if manager._current_model_name != job.model_name:
+                    needs_reload = True
+                # Only check for device mismatch if the job specifies a device
+                elif job.device is not None and manager._current_device != job.device:
+                    needs_reload = True
+
+                if needs_reload:
                     await manager.load_model(
                         job.model_name,
                         device=job.device,
@@ -143,7 +151,11 @@ async def _queue_job_and_wait(
         kwargs = {}
 
     # Priority 0 (high) for a match, 1 (low) for a mismatch
-    priority = 0 if (manager._current_model_name == model_name and manager._current_device == device) else 1
+    is_model_match = (manager._current_model_name == model_name)
+    # Give high priority if the device matches OR if the user didn't specify one
+    is_device_ok = (manager._current_device == device or device is None)
+
+    priority = 0 if is_model_match and is_device_ok else 1
 
     future = asyncio.get_running_loop().create_future()
 
@@ -194,7 +206,28 @@ def _work_calculate_similarity(embeddings_a: List[List[float]], embeddings_b: Li
 async def read_root(): # Changed to async for consistency
     return {"message": "EmbedServ is running. See /docs for API details."}
 
+@app.get("/health", status_code=200)
+async def health_check():
+    """A simple health check endpoint for automated systems."""
+    return Response(status_code=200)
 
+
+@app.get("/api/v1/status", response_model=ServerStatusResponse)
+async def get_server_status():
+    """Provides a detailed status of the server's state."""
+    # Ensure last_used is timezone-aware if it exists
+    last_used = manager._last_used
+    if last_used and last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=timezone.utc)
+
+    return ServerStatusResponse(
+        status="running",
+        current_model=manager._current_model_name,
+        current_device=manager._current_device,
+        last_used_at=last_used,
+        keep_alive_seconds=manager._current_keep_alive_duration.total_seconds(),
+        pending_queue_jobs=request_queue.qsize()
+    )
 # --- Model-Dependent Endpoints ---
 
 @app.post("/api/v1/embeddings", response_model=EmbeddingResponse)
@@ -221,7 +254,7 @@ async def add_to_db_collection(collection_name: str, request: AddRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'documents': request.documents, 'metadatas': request.metadatas, 'ids': request.ids}
+            kwargs={'documents': request.documents, 'metadatas': request.metadatas, 'ids': request.ids, 'model_name': request.model}
         )
         return StatusResponse(status="success",
                               message=f"Added {len(request.documents)} documents to '{collection_name}'.")
@@ -239,7 +272,7 @@ async def query_db_collection(collection_name: str, request: QueryRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'query_texts': request.query_texts, 'n_results': request.n_results, 'where': request.where}
+            kwargs={'query_texts': request.query_texts, 'n_results': request.n_results, 'where': request.where, 'model_name': request.model}
         )
         return QueryResponse(results=results)
     except ValueError as e:
@@ -256,7 +289,7 @@ async def update_in_db_collection(collection_name: str, request: UpdateRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'ids': request.ids, 'documents': request.documents, 'metadatas': request.metadatas}
+            kwargs={'ids': request.ids, 'documents': request.documents, 'metadatas': request.metadatas, 'model_name': request.model}
         )
         return StatusResponse(status="success", message=f"Updated {len(request.ids)} documents in '{collection_name}'.")
     except ValueError as e:
@@ -321,6 +354,46 @@ async def delete_from_db_collection(collection_name: str, request: DeleteByIdReq
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/db/{collection_name}/clear", response_model=StatusResponse)
+async def db_clear_collection(collection_name: str):
+    """Clears all documents from a collection, but keeps the collection itself."""
+    try:
+        # Run blocking I/O in a thread to not block the event loop
+        await asyncio.to_thread(db_manager.clear_collection, collection_name)
+        return StatusResponse(status="success", message=f"Collection '{collection_name}' cleared successfully.")
+    except ValueError as e:
+        # This is raised by the db_manager if the collection doesn't exist.
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/db/{collection_name}/batch-add", response_model=StatusResponse)
+async def batch_add_to_db_collection(collection_name: str, request: BatchAddRequest):
+    """
+    Adds a batch of documents with pre-computed embeddings to a collection.
+    Used by the 'db import' CLI command.
+    """
+    try:
+        # Run blocking I/O in a thread
+        await asyncio.to_thread(
+            db_manager.batch_add_to_collection,
+            collection_name=collection_name,
+            model_name=request.model,
+            ids=request.ids,
+            documents=request.documents,
+            metadatas=request.metadatas,
+            embeddings=request.embeddings
+        )
+        return StatusResponse(status="success",
+                              message=f"Successfully added batch of {len(request.documents)} documents to '{collection_name}'.")
+    except ValueError as e:
+        # This is raised if the collection doesn't exist or model mismatches.
+        # It's better to return a 409 (Conflict) or 400 (Bad Request) for model mismatch
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Catches other potential errors during the add operation.
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/unload", response_model=StatusResponse)
 async def unload_current_model():
@@ -336,16 +409,16 @@ async def unload_current_model():
 @app.get("/api/v1/db", response_model=CollectionListResponse)
 async def list_db_collections():
     # Run blocking I/O in a thread
-    collections = await asyncio.to_thread(db_manager.list_collections)
-    return CollectionListResponse(collections=collections)
+    collections_info = await asyncio.to_thread(db_manager.list_collections_with_metadata)
+    return CollectionListResponse(collections=collections_info)
 
 
 @app.post("/api/v1/db", response_model=StatusResponse)
 async def create_db_collection(request: CollectionRequest):
     try:
-        # Run blocking I/O in a thread
-        await asyncio.to_thread(db_manager.create_collection, request.name)
-        return StatusResponse(status="success", message=f"Collection '{request.name}' created.")
+        # Pass both name and model to the db manager
+        await asyncio.to_thread(db_manager.create_collection, request.name, request.model)
+        return StatusResponse(status="success", message=f"Collection '{request.name}' created with model '{request.model}'.")
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
