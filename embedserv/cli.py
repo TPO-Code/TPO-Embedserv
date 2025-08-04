@@ -104,6 +104,7 @@ def set_config(key: str, value: str):
             if not (1024 <= port_val <= 65535):
                 raise ValueError("Port must be between 1024 and 65535.")
             current_config[key] = port_val
+
         except ValueError as e:
             console.print(f"❌ [bold red]Invalid value for port:[/bold red] {e}")
             return
@@ -126,10 +127,10 @@ def set_config(key: str, value: str):
     console.print(f"✅ Configuration saved to ~/.embedserv/config.json")
     if key == 'port':
         console.print(
-            f"[yellow]Restart the service for the new port to take effect.[/yellow]")
-    else:
+            f"[yellow]Restart the service for the new port to take effect. Run sudo systemctl restart embedserv.[/yellow]")
+    elif key == 'keep_alive':
         console.print(
-            f"[yellow]Restart the service for the new keep-alive default to take effect.[/yellow]")
+            f"[yellow]Restart the service for the new keep-alive default to take effect. Run sudo systemctl restart embedserv.[/yellow]")
 
 
 @config.command("view")
