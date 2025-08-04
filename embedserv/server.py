@@ -244,7 +244,7 @@ async def add_to_db_collection(collection_name: str, request: AddRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'documents': request.documents, 'metadatas': request.metadatas, 'ids': request.ids}
+            kwargs={'documents': request.documents, 'metadatas': request.metadatas, 'ids': request.ids, 'model_name': request.model}
         )
         return StatusResponse(status="success",
                               message=f"Added {len(request.documents)} documents to '{collection_name}'.")
@@ -262,7 +262,7 @@ async def query_db_collection(collection_name: str, request: QueryRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'query_texts': request.query_texts, 'n_results': request.n_results, 'where': request.where}
+            kwargs={'query_texts': request.query_texts, 'n_results': request.n_results, 'where': request.where, 'model_name': request.model}
         )
         return QueryResponse(results=results)
     except ValueError as e:
@@ -279,7 +279,7 @@ async def update_in_db_collection(collection_name: str, request: UpdateRequest):
             model_name=request.model,
             device=request.device,
             args=(collection_name,),
-            kwargs={'ids': request.ids, 'documents': request.documents, 'metadatas': request.metadatas}
+            kwargs={'ids': request.ids, 'documents': request.documents, 'metadatas': request.metadatas, 'model_name': request.model}
         )
         return StatusResponse(status="success", message=f"Updated {len(request.ids)} documents in '{collection_name}'.")
     except ValueError as e:
@@ -404,9 +404,9 @@ async def list_db_collections():
 @app.post("/api/v1/db", response_model=StatusResponse)
 async def create_db_collection(request: CollectionRequest):
     try:
-        # Run blocking I/O in a thread
-        await asyncio.to_thread(db_manager.create_collection, request.name)
-        return StatusResponse(status="success", message=f"Collection '{request.name}' created.")
+        # Pass both name and model to the db manager
+        await asyncio.to_thread(db_manager.create_collection, request.name, request.model)
+        return StatusResponse(status="success", message=f"Collection '{request.name}' created with model '{request.model}'.")
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:

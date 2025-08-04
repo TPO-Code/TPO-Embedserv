@@ -139,3 +139,4 @@ class ModelManager:
                     f"Model '{self._current_model_name}' has been inactive for {time_since_last_use.total_seconds():.0f}s. Unloading.")
                 self.unload_model()
                 break
+

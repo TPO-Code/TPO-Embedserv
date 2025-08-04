@@ -53,6 +53,7 @@ class StatusResponse(BaseModel):
 
 class CollectionRequest(BaseModel):
     name: str = Field(..., description="The name for the new collection.")
+    model: str = Field(..., description="The sentence-transformer model to associate with this collection.")
 
 class CollectionCountResponse(BaseModel):
     name: str

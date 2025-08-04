@@ -287,14 +287,15 @@ def db_list(ctx: AppContext):
 
 @db_group.command("create")
 @click.argument("name")
+@click.option("--model", required=True, help="The embedding model to use for this collection (e.g., 'all-MiniLM-L6-v2').")
 @pass_ctx
-def db_create(ctx: AppContext, name: str):
+def db_create(ctx: AppContext, name: str, model: str):
     """Creates a new, empty collection on the server."""
     console = Console()
     try:
         response = requests.post(
             f"{ctx.server_url}/api/v1/db",
-            json={"name": name}
+            json={"name": name, "model": model} # Pass model in the JSON payload
         )
         response.raise_for_status()
         data = response.json()
