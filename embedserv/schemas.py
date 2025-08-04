@@ -102,3 +102,13 @@ class GetResponse(BaseModel):
     embeddings: Optional[List[List[float]]] = None
     metadatas: Optional[List[Dict[str, Any]]] = None
     documents: Optional[List[str]] = None
+
+
+class SimilarityRequest(BaseModel):
+    """Request body for the /similarity endpoint."""
+    embeddings_a: List[List[float]] = Field(..., description="The first list of embedding vectors.")
+    embeddings_b: List[List[float]] = Field(..., description="The second list of embedding vectors.")
+
+class SimilarityResponse(BaseModel):
+    """Response body for the /similarity endpoint."""
+    similarity_scores: List[List[float]]

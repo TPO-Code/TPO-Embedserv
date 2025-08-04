@@ -5,15 +5,17 @@ from functools import partial
 from dataclasses import dataclass, field
 from typing import List, Callable, Any, Dict
 
+import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import cos_sim
 
 from .schemas import (
     EmbeddingRequest, EmbeddingResponse, Embedding, EmbeddingUsage,
     ModelList, PullRequest, StatusResponse, CollectionRequest, AddRequest,
     QueryRequest, QueryResponse, CollectionListResponse, UpdateRequest,
-    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse
+    GetByIdRequest, DeleteByIdRequest, CollectionCountResponse, GetResponse, SimilarityRequest, SimilarityResponse
 )
 from .manager import ModelManager, DEFAULT_KEEP_ALIVE_SECONDS
 from .models import pull_model as pull_model_sync, list_local_models, delete_model as delete_model_sync
@@ -174,6 +176,17 @@ def _work_create_embeddings(
     embedding_data = [Embedding(embedding=vector.tolist(), index=i) for i, vector in enumerate(vectors)]
     return EmbeddingResponse(data=embedding_data, model=request_model_name, usage=EmbeddingUsage())
 
+def _work_calculate_similarity(embeddings_a: List[List[float]], embeddings_b: List[List[float]]) -> List[List[float]]:
+    """Calculates cosine similarity between two sets of embeddings."""
+    try:
+        tensor_a = torch.tensor(embeddings_a)
+        tensor_b = torch.tensor(embeddings_b)
+        similarity_matrix = cos_sim(tensor_a, tensor_b)
+        return similarity_matrix.tolist()
+    except Exception as e:
+        log.error(f"Error during similarity calculation: {e}")
+        # Re-raise a ValueError to be handled by the endpoint, providing a clear message.
+        raise ValueError(f"Could not calculate similarity. Check if embedding dimensions match. Original error: {e}")
 
 # --- API Endpoints ---
 
@@ -253,6 +266,24 @@ async def update_in_db_collection(collection_name: str, request: UpdateRequest):
 
 
 # --- Model-Independent Endpoints) ---
+
+@app.post("/api/v1/similarity", response_model=SimilarityResponse)
+async def calculate_similarity(request: SimilarityRequest):
+    """Calculates cosine similarity between two sets of embeddings."""
+    try:
+        # Run the potentially heavy computation in a separate thread
+        scores = await asyncio.to_thread(
+            _work_calculate_similarity,
+            request.embeddings_a,
+            request.embeddings_b
+        )
+        return SimilarityResponse(similarity_scores=scores)
+    except ValueError as e:
+        # Catch errors from the worker (e.g., dimension mismatch)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Catch any other unexpected errors
+        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {e}")
 
 @app.get("/api/v1/db/{collection_name}/count", response_model=CollectionCountResponse)
 async def get_db_collection_count(collection_name: str):
